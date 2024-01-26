@@ -149,7 +149,7 @@ class ElicAnalysis(tf.keras.layers.Layer):
     ]
     blocks = list(filter(None, blocks))  # remove None elements
     self._transform = tf.keras.Sequential(blocks)
-
+    
   def call(self, x, training = None):
     del training
     return self._transform(x)

@@ -376,6 +376,7 @@ class Model(tf.Module):
     self._range_code_transformer = range_code_transformer
     self._temporal_pad_token_maker = PerChannelWeight(
         num_channels=self._transform_config.num_channels)
+      
     self._build_transforms(self._transform_config)
 
   def _build_transforms(self, config):
@@ -413,14 +414,23 @@ class Model(tf.Module):
       training,
   ):
     fake_previous_latent = self._temporal_pad_token_maker(latent.shape)
+    print("fake_previous_latent:", tf.shape(fake_previous_latent))
     assert fake_previous_latent.shape == latent.shape  # Programmer error.
-    processed = (
-        self._entropy_model_pframe.process_previous_latent_q(
-            fake_previous_latent, training=training))
-    return self._entropy_model_pframe(
+    processed = (self._entropy_model_pframe.process_previous_latent_q(fake_previous_latent, training=training))
+
+    print("\nprocessed:")
+    for k in processed._asdict():
+      print("  ", k, " =", getattr(processed, k))
+
+    ent = self._entropy_model_pframe(
         latent_unquantized=latent,
         previous_latents=(processed,),
         training=training)
+
+    print("\noutput of _entropy_model_pframe:")
+    for k in ent._asdict():
+      print("  ", k, " =", getattr(ent, k))
+    return ent
 
   def _encode_iframe_latent(
       self,
@@ -436,13 +446,24 @@ class Model(tf.Module):
       training,
       cache,
   ):
+    print("i"*50, ",[encode_iframe]")
     latent = self._analysis_image(frame.rgb, training=training)
+    # print("self._analysis_image:")
+    # print(self._analysis_image._transform.summary())
+    print("  latent:", tf.shape(latent))
+
     output = self._encode_iframe_latent(latent, training)
     metrics = output.metrics
     bottleneck = Bottleneck(output.perturbed_latent,
                             output.bits, output.features)
+    print("\nbottleneck:")
+    for k in bottleneck._asdict():
+      print("  ", k, " =", tf.shape(getattr(bottleneck, k)))
+    
     decode_iframe = tf_memoize.bind(self.decode_iframe, cache)
     _, state, _ = decode_iframe(bottleneck, training)
+    print("\nstate:")
+    print("  ", state)
     return state, EncodeOut(bottleneck, metrics)
 
   @tf_memoize.memoize
@@ -475,6 +496,8 @@ class Model(tf.Module):
       ):
     metrics = Metrics.make()
     latent = self._analysis_image(frame.rgb, training=training)
+    print("p"*50, " [encode_pframe]")
+    print("  latent:", tf.shape(latent))
 
     if not training and self._range_code_transformer:
       # Note that at the moment, we also decode right away inside
@@ -488,16 +511,25 @@ class Model(tf.Module):
           latent_unquantized=latent,
           previous_latents=state,
           training=training)
+    
+    print("\noutput:")
+    for k in output._asdict():
+      print("  ", k, " =", getattr(output, k))
 
     assert output.features is not None
     bottleneck = Bottleneck(output.perturbed_latent, output.bits,
                             output.features)
+    print("\nbottleneck:")
+    for k in bottleneck._asdict():
+      print("  ", k, " =", tf.shape(getattr(bottleneck, k)))
+
     metrics.merge(output.metrics)
 
     decode_pframe = tf_memoize.bind(self.decode_pframe, cache)
     _, new_state, _ = decode_pframe(
         bottleneck, frame_index, state, training, cache)
-
+    print("\nnew_state:")
+    print("  ", new_state)
     return new_state, EncodeOut(bottleneck, metrics)
 
   @tf_memoize.memoize
@@ -528,14 +560,18 @@ class Model(tf.Module):
       training,
       cache,
   ):
+    print("  >> encode_frames")
     state = None
     for frame_index, frame in enumerate(frames):
+      print("Encoding frame_index: {}".format(frame_index))
       if is_iframe(frame_index):
         state, encode_out = self.encode_iframe(frame, training, cache)
       else:
         assert state is not None
         state, encode_out = self.encode_pframe(frame, frame_index, state,
                                                training, cache)
+      if frame_index > 1:
+        assert 0
       yield encode_out
 
   def decode_frames(
@@ -565,18 +601,26 @@ class Model(tf.Module):
       cache,
   ):
     """Encodes and decodes frames, and also handles padding/unpadding."""
-
+    print("\n"*20)
+    print(">> Encodes and decodes frames, and also handles padding/unpadding.")
+    
     (height, width), frames = _spy_spatial_shape(frames)
+    print(height, width)
+
     frames = _iter_padded(frames, self._pad_factor)
 
     encode_outs = self.encode_frames(frames, training, cache)
 
+    print(">> encode_outs:", encode_outs)
+
     # Jointly iterate over `encode_outs` twice.
     encode_outs, encode_outs_tee = itertools.tee(encode_outs)
+    print(">> encode_outs_tee:", encode_outs_tee)
     reconstructions_with_metrics = self.decode_frames(
         (encode_out.bottleneck for encode_out in encode_outs_tee),
         training, cache)
 
+    print(">> reconstructions_with_metrics:", reconstructions_with_metrics)
     for ((reconstruction, decode_metrics), encode_out) in zip(
         reconstructions_with_metrics, encode_outs):
       frame_metrics = Metrics.make()
@@ -588,6 +632,7 @@ class Model(tf.Module):
           bits=encode_out.bottleneck.bits,
           frame_metrics=frame_metrics,
       )
+    assert 0
 
   def frame_loss(
       self,
@@ -628,6 +673,8 @@ class Model(tf.Module):
     """Compute rd loss over a video batch, as well as metrics."""
     video.validate_shape()
     frames = video.get_frames()
+    print(">>> training: {}".format(training))
+    print(">>> frames: {}".format(len(frames)))
     network_outs = self.encode_and_decode_frames(
         frames, training, cache)
 

@@ -302,10 +302,13 @@ class VCTEntropyModel(tf.Module):
     Returns:
       TemporalEntropyModelOut, see docstring there.
     """
-
+    print()
+    print("VCTEntropyModel __call__")
     b, h, w, _ = latent_unquantized.shape
+    print("  b, h, w:", b, h, w)
     encoded_seqs = self._get_encoded_seqs(previous_latents, (h, w))
     b_enc, _, d_enc = encoded_seqs[0].shape
+    print("  b_enc, d_enc:", b_enc, d_enc)
     if d_enc != self.d_model:
       raise ValueError(encoded_seqs[0].shape)
 
@@ -313,6 +316,7 @@ class VCTEntropyModel(tf.Module):
 
     latent_q_patched, (n_h, n_w) = self.patcher(latent_q, self.window_size_dec)
     b_dec, _, d_dec = latent_q_patched.shape
+    print("  b_enc, d_enc:", b_enc, d_enc)
     if d_dec != self.num_channels:
       raise ValueError(latent_q_patched.shape)
     if b_dec != b_enc:

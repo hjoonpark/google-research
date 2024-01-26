@@ -43,6 +43,8 @@ class ModelsTest(tf.test.TestCase):
   def test_train_eval(self):
     ckpt_dir = self.create_tempdir().full_path
     model = ModelLite()
+    print("*"*200)
+
     train_step = tf.function(model.train_step)
     train_step(video_tensors.TrainingVideo.make_random(num_frames=3))
     ckpt_p = model.write_ckpt(ckpt_dir, step=1)
@@ -50,4 +52,8 @@ class ModelsTest(tf.test.TestCase):
 
 
 if __name__ == "__main__":
+  tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+  print()
+  print("tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)")
+  print()
   tf.test.main()
