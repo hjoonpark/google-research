@@ -31,6 +31,7 @@ from vct.src import metric_collection
 from vct.src import schedule
 from vct.src import tf_memoize
 from vct.src import video_tensors
+from vct.src.printer import PRINT
 
 import os, sys
 import matplotlib.pyplot as plt
@@ -416,55 +417,54 @@ class Model(tf.Module):
       self,
       latent,
       training,
+      print_prefix
   ):
     fake_previous_latent = self._temporal_pad_token_maker(latent.shape)
     # print("fake_previous_latent:", fake_previous_latent.get_shape())
     assert fake_previous_latent.shape == latent.shape  # Programmer error.
-    print(">> self._entropy_model_pframe.process_previous_latent_q")
-    processed = (self._entropy_model_pframe.process_previous_latent_q(fake_previous_latent, training=training, print_prefix=None))
+    PRINT(">> self._entropy_model_pframe.process_previous_latent_q", print_prefix)
+    processed = (self._entropy_model_pframe.process_previous_latent_q(fake_previous_latent, training=training, print_prefix=None if print_prefix is None else print_prefix*2))
 
-    print("iframe processed:")
-    for k in processed._asdict():
-      v = getattr(processed, k)
-      if tf.is_tensor(v):
-        print("  ", k, " =", v.get_shape())
-      else:
-        print("  ", k, " =", v)
+    # PRINT("iframe processed:", print_prefix)
+    # for k in processed._asdict():
+    #   v = getattr(processed, k)
+    #   if tf.is_tensor(v):
+    #     print("  ", k, " =", v.get_shape())
+    #   else:
+    #     print("  ", k, " =", v)
 
     ent = self._entropy_model_pframe(
         latent_unquantized=latent,
         previous_latents=(processed,),
         training=training,
-        print_prefix=None)
+        print_prefix=None if print_prefix is None else print_prefix*2)
 
-    print("output of _entropy_model_pframe:")
-    for k in ent._asdict():
-      v = getattr(ent, k)
-      if tf.is_tensor(v):
-        print("  ", k, " =", v.get_shape())
-      else:
-        print("  ", k, " =", v)
+    # PRINT("output of _entropy_model_pframe:", print_prefix)
+    # for k in ent._asdict():
+    #   v = getattr(ent, k)
+    #   if tf.is_tensor(v):
+    #     print("  ", k, " =", v.get_shape())
+    #   else:
+    #     print("  ", k, " =", v)
     return ent
 
   def _encode_iframe_latent(
       self,
       latent,
       training,
+      print_prefix
   ):
     """Encodes the I-frame latent."""
-    return self._encode_iframe_latent_with_pframe_model(latent, training)
+    return self._encode_iframe_latent_with_pframe_model(latent, training, print_prefix)
 
-  def encode_iframe(
-      self,
-      frame,
-      training,
-      cache,
-  ):
+  def encode_iframe(self, frame, training, cache, print_prefix):
+    PRINT(">> encode_iframe", print_prefix)
     latent = self._analysis_image(frame.rgb, training=training)
+
     to_file = os.path.join(PLOT_DIR, "_analysis_image._transform.jpg")
     tf.keras.utils.plot_model(self._analysis_image._transform, to_file=to_file, show_shapes=True)
-    print("  plot saved:", to_file)
-    print("  frame.rgb:", frame.rgb.get_shape(), ", latent:", latent.get_shape())
+    # PRINT("  plot saved: {}".format(to_file), print_prefix)
+    # PRINT("  frame.rgb: {}, latent: {}".format(frame.rgb.get_shape(), latent.get_shape()), print_prefix)
 
     # rgb = tf.map_fn(lambda x: x, frame.rgb)
     # length = rgb.shape[0]
@@ -483,8 +483,8 @@ class Model(tf.Module):
     # plt.close()
     # print(save_path)
 
-    print(">> _encode_iframe_latent")
-    output = self._encode_iframe_latent(latent, training)
+    PRINT(">> _encode_iframe_latent", print_prefix)
+    output = self._encode_iframe_latent(latent, training, print_prefix=None if print_prefix is None else print_prefix*2)
     metrics = output.metrics
     bottleneck = Bottleneck(output.perturbed_latent,
                             output.bits, output.features)
@@ -492,28 +492,29 @@ class Model(tf.Module):
     # for k in bottleneck._asdict():
     #   print("  ", k, " =", getattr(bottleneck, k).get_shape())
     
+    PRINT(">> decode_iframe", print_prefix)
     decode_iframe = tf_memoize.bind(self.decode_iframe, cache)
-    _, state, _ = decode_iframe(bottleneck, training)
+    _, state, _ = decode_iframe(bottleneck, training, print_prefix)
     # print("\nstate:")
     # print("  ", state)
     return state, EncodeOut(bottleneck, metrics)
 
   @tf_memoize.memoize
-  def decode_iframe(
-      self,
-      bottleneck,
-      training,
-  ):
+  def decode_iframe(self, bottleneck, training, print_prefix):
     metrics = Metrics.make()
     latent_q = bottleneck.latent_q
+    PRINT(">> _dequantizer", print_prefix)
     synthesis_in = self._dequantizer(
         latent_q=latent_q, entropy_features=bottleneck.entropy_model_features)
+    PRINT(" synthesis_in: {}".format(synthesis_in.shape), print_prefix)
+
     reconstruction = self._synthesis_image(synthesis_in, training=training)
+    PRINT(" reconstruction: {}".format(reconstruction.shape), print_prefix)
     latent_q = bottleneck.latent_q
     # TODO(mentzer): Remove.
     latent_q = tf.stop_gradient(latent_q)
-    previous_latent = self._entropy_model_pframe.process_previous_latent_q(
-        latent_q, training=training)
+    previous_latent = self._entropy_model_pframe.process_previous_latent_q(latent_q, training=training)
+    PRINT(" previous_latent: {}".format(""), print_prefix)
     # Note that this is a tuple, we start with a 1-length context.
     state: State = (previous_latent,)
     return reconstruction, state, metrics
@@ -525,11 +526,12 @@ class Model(tf.Module):
       state,  # \hat y_t-1
       training,
       cache,
+      print_prefix
       ):
+    PRINT("<< encode_pframe", print_prefix)
     metrics = Metrics.make()
     latent = self._analysis_image(frame.rgb, training=training)
-    # print("p"*50, " [encode_pframe]")
-    # print("  frame.rgb:", frame.rgb, ", latent:", latent.get_shape())
+    # print("  frame.rgb:", frame.rgb.get_shape(), ", latent:", latent.get_shape())
 
     if not training and self._range_code_transformer:
       # Note that at the moment, we also decode right away inside
@@ -539,11 +541,12 @@ class Model(tf.Module):
           previous_latents=state,
           run_decode=frame_index < 5)
     else:
+      # PRINT(">> self._entropy_model_pframe", print_prefix)
       output = self._entropy_model_pframe(
           latent_unquantized=latent,
           previous_latents=state,
           training=training,
-          print_prefix=None)
+          print_prefix=None if print_prefix is None else print_prefix*2)
     
     # print("\noutput:")
     # for k in output._asdict():
@@ -558,11 +561,20 @@ class Model(tf.Module):
 
     metrics.merge(output.metrics)
 
+    PRINT("<< decode_pframe", print_prefix)
     decode_pframe = tf_memoize.bind(self.decode_pframe, cache)
+
+    # PRINT(">> decode_pframe", print_prefix)
     _, new_state, _ = decode_pframe(
         bottleneck, frame_index, state, training, cache)
-    # print("\nnew_state:")
-    # print("  ", new_state)
+    
+    # for k in new_state._asdict():
+    #   v = getattr(new_state, k)
+    #   if tf.is_tensor(v):
+    #     print("  ", k, " =", v.get_shape())
+    #   else:
+    #     print("  ", k, " =", v)
+
     return new_state, EncodeOut(bottleneck, metrics)
 
   @tf_memoize.memoize
@@ -596,15 +608,12 @@ class Model(tf.Module):
     state = None
 
     for frame_index, frame in enumerate(frames):
-      print("\n  [{}] Encoding frames".format(frame_index))
+      print("\n  [{}] encode_frames".format(frame_index))
       if is_iframe(frame_index):
-        print("    >> encode_iframe")
-        state, encode_out = self.encode_iframe(frame, training, cache)
+        state, encode_out = self.encode_iframe(frame, training, cache, print_prefix="   ")
       else:
         assert state is not None
-        print("    >> encode_pframe")
-        state, encode_out = self.encode_pframe(frame, frame_index, state,
-                                               training, cache)
+        state, encode_out = self.encode_pframe(frame, frame_index, state, training, cache, print_prefix="   ")
       yield encode_out
 
   def decode_frames(
@@ -620,7 +629,7 @@ class Model(tf.Module):
     for frame_index, bottleneck in enumerate(bottlenecks):
       if is_iframe(frame_index):
         reconstruction, state, frame_metrics = decode_iframe(
-            bottleneck, training)
+            bottleneck, training, print_prefix=None)
       else:
         assert state is not None
         reconstruction, state, frame_metrics = decode_pframe(
@@ -646,7 +655,7 @@ class Model(tf.Module):
     
     frames = _iter_padded(frames, self._pad_factor)
 
-    print(">> encode_frames")
+    print(">> encode_and_decode_frames->encode_frames")
     encode_outs = self.encode_frames(frames, training, cache)
 
     # print(">> encode_outs:", encode_outs)
@@ -654,6 +663,8 @@ class Model(tf.Module):
     # Jointly iterate over `encode_outs` twice.
     encode_outs, encode_outs_tee = itertools.tee(encode_outs)
     # print(">> encode_outs_tee:", encode_outs_tee)
+
+    print(">> encode_and_decode_frames->decode_frames")
     reconstructions_with_metrics = self.decode_frames(
         (encode_out.bottleneck for encode_out in encode_outs_tee),
         training, cache)
