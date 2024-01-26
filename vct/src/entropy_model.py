@@ -31,10 +31,12 @@ from vct.src import bottlenecks
 from vct.src import metric_collection
 from vct.src import patcher
 from vct.src import transformer_layers
-
+from vct.src.printer import PRINT
 
 _LATENT_NORM_FAC: float = 35.0
 
+import os
+PLOT_DIR = "output_tmp"
 
 def _unbatch(t, dims):
   """Reshapes first dimension, i.e. (b, ...) becomes (b', *dims, ...)."""
@@ -190,7 +192,7 @@ class VCTEntropyModel(tf.Module):
               num_means=100, num_scales=256))
 
   def process_previous_latent_q(self, previous_latent_quantized,
-                                training):
+                                training, print_prefix=None):
     """Processes the previous via the encoder, see baseclass docstring.
 
     This can be used if previous latents go through an expensive transform
@@ -210,8 +212,10 @@ class VCTEntropyModel(tf.Module):
       Processed previous latent as a `PreviousLatent` tuple.
     """
     # (b', seq_len, num_channels)
-    latent_patches, _ = self.patcher(
-        previous_latent_quantized, self.window_size_enc)
+    PRINT(">> self.patcher", print_prefix)
+    PRINT("  previous_latent_quantized: {}, window_size_enc: {}".format(previous_latent_quantized.get_shape(), self.window_size_enc), print_prefix)
+    latent_patches, _ = self.patcher(previous_latent_quantized, self.window_size_enc)
+    PRINT("  latent_patches: {}".format(latent_patches.get_shape()), print_prefix)
     patches = latent_patches / _LATENT_NORM_FAC
 
     # (b', seq_len, d_model)
@@ -220,6 +224,12 @@ class VCTEntropyModel(tf.Module):
     patches = self.enc_position_sep(patches)
     patches = self.encoder_sep(patches, training)
 
+    PRINT(self.encoder_embedding, print_prefix)
+    PRINT(self.post_embedding_norm, print_prefix)
+    PRINT(self.enc_position_sep, print_prefix)
+    PRINT(self.encoder_sep, print_prefix)
+    PRINT("  patches: {}".format(patches.get_shape()), print_prefix)
+    
     return PreviousLatent(previous_latent_quantized, processed=patches)
 
   def _embed_latent_q_patched(self, latent_q_patched):
@@ -238,16 +248,19 @@ class VCTEntropyModel(tf.Module):
       latent_q_patched,
       training,
       true_batch_size,
+      print_prefix=None
   ):
     """Calculates transformer distribution prediction."""
     if encoded_patched.shape[-1] != self.d_model:
       raise ValueError(f"Context must have final dim {self.d_model}, "
                        f"got shape={encoded_patched.shape}. "
                        "Did you run `process_previous_latent_q`?")
-
+    PRINT(self.learned_zero, print_prefix)
     latent_q_patched_shifted = self.learned_zero(latent_q_patched)
+    PRINT("latent_q_patched_shifted: {}".format(latent_q_patched_shifted.get_shape()), print_prefix)
     latent_q_patched_emb_shifted = self._embed_latent_q_patched(
         latent_q_patched_shifted)
+    PRINT("latent_q_patched_emb_shifted: {}".format(latent_q_patched_emb_shifted.get_shape()), print_prefix)
     del latent_q_patched  # Should not use after this line.
 
     tf.debugging.assert_shapes([
@@ -255,9 +268,14 @@ class VCTEntropyModel(tf.Module):
         (latent_q_patched_emb_shifted, ("B", "seq_len_dec", "d_model")),
     ])
 
+    PRINT(self.enc_position_joint, print_prefix)
     encoded_patched = self.enc_position_joint(encoded_patched)
+    PRINT("encoded_patched: {}".format(encoded_patched.get_shape()), print_prefix)
+    PRINT(self.encoder_joint)
     encoded_patched = self.encoder_joint(encoded_patched, training)
+    PRINT("encoded_patched: {}".format(encoded_patched.get_shape()), print_prefix)
 
+    PRINT(self.decoder, print_prefix)
     dec_output = self.decoder(
         latent=latent_q_patched_emb_shifted,
         enc_output=encoded_patched,
@@ -291,6 +309,7 @@ class VCTEntropyModel(tf.Module):
       latent_unquantized,
       previous_latents,
       training,
+      print_prefix
   ):
     """Does a forward pass through the entropy model.
 
@@ -302,48 +321,60 @@ class VCTEntropyModel(tf.Module):
     Returns:
       TemporalEntropyModelOut, see docstring there.
     """
-    print()
-    print("VCTEntropyModel __call__")
+    PRINT(">> self.process_previous_latent_q call: (VCTEntropyModel)", print_prefix)
     b, h, w, _ = latent_unquantized.shape
-    print("  b, h, w:", b, h, w)
+    PRINT("latent_unquantized: {}".format(latent_unquantized.shape), print_prefix)
     encoded_seqs = self._get_encoded_seqs(previous_latents, (h, w))
+    PRINT("encoded_seqs: {} | {}".format(len(encoded_seqs), encoded_seqs[0].shape), print_prefix)
+
     b_enc, _, d_enc = encoded_seqs[0].shape
-    print("  b_enc, d_enc:", b_enc, d_enc)
     if d_enc != self.d_model:
       raise ValueError(encoded_seqs[0].shape)
 
     latent_q = tfc.round_st(latent_unquantized)
+    PRINT("latent_q: {}".format( latent_q.shape), print_prefix)
 
     latent_q_patched, (n_h, n_w) = self.patcher(latent_q, self.window_size_dec)
+    PRINT("latent_q_patched: {}".format(latent_q_patched.shape), print_prefix)
     b_dec, _, d_dec = latent_q_patched.shape
-    print("  b_enc, d_enc:", b_enc, d_enc)
+    
     if d_dec != self.num_channels:
       raise ValueError(latent_q_patched.shape)
     if b_dec != b_enc:
       raise ValueError(
           f"Expected matching batch dimes, got {b_enc} != {b_dec}!")
 
+    PRINT(">> self._get_transformer_output", print_prefix)
     mean, scale, dec_output, metrics = self._get_transformer_output(
         # Fuse all in the sequence dimension.
         encoded_patched=tf.concat(encoded_seqs, axis=-2),
         latent_q_patched=latent_q_patched,
         training=training,
-        true_batch_size=b)
+        true_batch_size=b,
+        print_prefix=None if print_prefix is None else print_prefix*2)
+    PRINT("  mean:{}, scale:{}".format(mean.shape, scale.shape), print_prefix)
+    PRINT("  dec_output: {}".format(dec_output.shape), print_prefix)
+    PRINT("  metrics: {}".format(metrics), print_prefix)
     assert mean.shape == latent_q_patched.shape
     decoder_features = self.patcher.unpatch(dec_output, n_h, n_w, crop=(h, w))
+    PRINT("  decoder_features: {}".format(decoder_features.shape), print_prefix)
 
     # Each tensor here is (b', seq_len, num_channels).
     latent_unquantized_patched = self.patcher(latent_unquantized,
                                               self.window_size_dec).tensor
+    PRINT("  latent_unquantized_patched: {}".format( latent_unquantized_patched.shape), print_prefix)
+    PRINT(self.bottleneck)
     output, bits = self.bottleneck(
         latent_unquantized_patched,
         mean,
         scale,
         training=training)
+    PRINT("  output: {}, bits: {}".format(output.shape, bits.shape), print_prefix)
     assert output.shape == bits.shape
 
     # (b, h, w, num_channels).
     output = self.patcher.unpatch(output, n_h, n_w, crop=(h, w))
+    PRINT("  unpatched output: {}".format(output.shape), print_prefix)
     assert output.shape == latent_unquantized.shape
 
     # (b,)

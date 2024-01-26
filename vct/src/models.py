@@ -32,6 +32,10 @@ from vct.src import schedule
 from vct.src import tf_memoize
 from vct.src import video_tensors
 
+import os, sys
+import matplotlib.pyplot as plt
+PLOT_DIR = "output_tmp"
+os.makedirs(PLOT_DIR, exist_ok=True)
 
 Metrics = metric_collection.Metrics
 WithMetrics = metric_collection.WithMetrics
@@ -414,22 +418,32 @@ class Model(tf.Module):
       training,
   ):
     fake_previous_latent = self._temporal_pad_token_maker(latent.shape)
-    print("fake_previous_latent:", tf.shape(fake_previous_latent))
+    # print("fake_previous_latent:", fake_previous_latent.get_shape())
     assert fake_previous_latent.shape == latent.shape  # Programmer error.
-    processed = (self._entropy_model_pframe.process_previous_latent_q(fake_previous_latent, training=training))
+    print(">> self._entropy_model_pframe.process_previous_latent_q")
+    processed = (self._entropy_model_pframe.process_previous_latent_q(fake_previous_latent, training=training, print_prefix=None))
 
-    print("\nprocessed:")
+    print("iframe processed:")
     for k in processed._asdict():
-      print("  ", k, " =", getattr(processed, k))
+      v = getattr(processed, k)
+      if tf.is_tensor(v):
+        print("  ", k, " =", v.get_shape())
+      else:
+        print("  ", k, " =", v)
 
     ent = self._entropy_model_pframe(
         latent_unquantized=latent,
         previous_latents=(processed,),
-        training=training)
+        training=training,
+        print_prefix=None)
 
-    print("\noutput of _entropy_model_pframe:")
+    print("output of _entropy_model_pframe:")
     for k in ent._asdict():
-      print("  ", k, " =", getattr(ent, k))
+      v = getattr(ent, k)
+      if tf.is_tensor(v):
+        print("  ", k, " =", v.get_shape())
+      else:
+        print("  ", k, " =", v)
     return ent
 
   def _encode_iframe_latent(
@@ -446,24 +460,42 @@ class Model(tf.Module):
       training,
       cache,
   ):
-    print("i"*50, ",[encode_iframe]")
     latent = self._analysis_image(frame.rgb, training=training)
-    # print("self._analysis_image:")
-    # print(self._analysis_image._transform.summary())
-    print("  latent:", tf.shape(latent))
+    to_file = os.path.join(PLOT_DIR, "_analysis_image._transform.jpg")
+    tf.keras.utils.plot_model(self._analysis_image._transform, to_file=to_file, show_shapes=True)
+    print("  plot saved:", to_file)
+    print("  frame.rgb:", frame.rgb.get_shape(), ", latent:", latent.get_shape())
 
+    # rgb = tf.map_fn(lambda x: x, frame.rgb)
+    # length = rgb.shape[0]
+    # print("lentgh:", length)
+    # fig = plt.figure()
+    # n = 0
+    # for i in tf.range(length):
+    #   I = rgb[i].numpy()
+    #   ax = fig.add_subplot(1, length, n+1)
+    #   ax.imshow(I)
+    #   n+=1
+    # save_dir = "output_tmp"
+    # os.makedirs(save_dir, exist_ok=True)
+    # save_path = os.path.join(save_dir, "test.jpg")
+    # plt.savefig(save_path)
+    # plt.close()
+    # print(save_path)
+
+    print(">> _encode_iframe_latent")
     output = self._encode_iframe_latent(latent, training)
     metrics = output.metrics
     bottleneck = Bottleneck(output.perturbed_latent,
                             output.bits, output.features)
-    print("\nbottleneck:")
-    for k in bottleneck._asdict():
-      print("  ", k, " =", tf.shape(getattr(bottleneck, k)))
+    # print("\nbottleneck:")
+    # for k in bottleneck._asdict():
+    #   print("  ", k, " =", getattr(bottleneck, k).get_shape())
     
     decode_iframe = tf_memoize.bind(self.decode_iframe, cache)
     _, state, _ = decode_iframe(bottleneck, training)
-    print("\nstate:")
-    print("  ", state)
+    # print("\nstate:")
+    # print("  ", state)
     return state, EncodeOut(bottleneck, metrics)
 
   @tf_memoize.memoize
@@ -496,8 +528,8 @@ class Model(tf.Module):
       ):
     metrics = Metrics.make()
     latent = self._analysis_image(frame.rgb, training=training)
-    print("p"*50, " [encode_pframe]")
-    print("  latent:", tf.shape(latent))
+    # print("p"*50, " [encode_pframe]")
+    # print("  frame.rgb:", frame.rgb, ", latent:", latent.get_shape())
 
     if not training and self._range_code_transformer:
       # Note that at the moment, we also decode right away inside
@@ -510,26 +542,27 @@ class Model(tf.Module):
       output = self._entropy_model_pframe(
           latent_unquantized=latent,
           previous_latents=state,
-          training=training)
+          training=training,
+          print_prefix=None)
     
-    print("\noutput:")
-    for k in output._asdict():
-      print("  ", k, " =", getattr(output, k))
+    # print("\noutput:")
+    # for k in output._asdict():
+    #   print("  ", k, " =", getattr(output, k))
 
     assert output.features is not None
     bottleneck = Bottleneck(output.perturbed_latent, output.bits,
                             output.features)
-    print("\nbottleneck:")
-    for k in bottleneck._asdict():
-      print("  ", k, " =", tf.shape(getattr(bottleneck, k)))
+    # print("\nbottleneck:")
+    # for k in bottleneck._asdict():
+    #   print("  ", k, " =", tf.getattr(bottleneck, k).get_shape())
 
     metrics.merge(output.metrics)
 
     decode_pframe = tf_memoize.bind(self.decode_pframe, cache)
     _, new_state, _ = decode_pframe(
         bottleneck, frame_index, state, training, cache)
-    print("\nnew_state:")
-    print("  ", new_state)
+    # print("\nnew_state:")
+    # print("  ", new_state)
     return new_state, EncodeOut(bottleneck, metrics)
 
   @tf_memoize.memoize
@@ -560,18 +593,18 @@ class Model(tf.Module):
       training,
       cache,
   ):
-    print("  >> encode_frames")
     state = None
+
     for frame_index, frame in enumerate(frames):
-      print("Encoding frame_index: {}".format(frame_index))
+      print("\n  [{}] Encoding frames".format(frame_index))
       if is_iframe(frame_index):
+        print("    >> encode_iframe")
         state, encode_out = self.encode_iframe(frame, training, cache)
       else:
         assert state is not None
+        print("    >> encode_pframe")
         state, encode_out = self.encode_pframe(frame, frame_index, state,
                                                training, cache)
-      if frame_index > 1:
-        assert 0
       yield encode_out
 
   def decode_frames(
@@ -601,26 +634,31 @@ class Model(tf.Module):
       cache,
   ):
     """Encodes and decodes frames, and also handles padding/unpadding."""
-    print("\n"*20)
-    print(">> Encodes and decodes frames, and also handles padding/unpadding.")
+    # print("\n"*20)
+    # print(">> START << Encodes and decodes frames, and also handles padding/unpadding.")
     
     (height, width), frames = _spy_spatial_shape(frames)
-    print(height, width)
-
+    # frames_list = list(frames)
+    # for frame_idx, frame in enumerate(frames_list):
+    #   print("frame[{}]".format(frame_idx))
+    #   for k in frame._asdict():
+    #     print("  ", k, " =", getattr(frame, k).get_shape())
+    
     frames = _iter_padded(frames, self._pad_factor)
 
+    print(">> encode_frames")
     encode_outs = self.encode_frames(frames, training, cache)
 
-    print(">> encode_outs:", encode_outs)
+    # print(">> encode_outs:", encode_outs)
 
     # Jointly iterate over `encode_outs` twice.
     encode_outs, encode_outs_tee = itertools.tee(encode_outs)
-    print(">> encode_outs_tee:", encode_outs_tee)
+    # print(">> encode_outs_tee:", encode_outs_tee)
     reconstructions_with_metrics = self.decode_frames(
         (encode_out.bottleneck for encode_out in encode_outs_tee),
         training, cache)
 
-    print(">> reconstructions_with_metrics:", reconstructions_with_metrics)
+    # print(">> reconstructions_with_metrics:", reconstructions_with_metrics)
     for ((reconstruction, decode_metrics), encode_out) in zip(
         reconstructions_with_metrics, encode_outs):
       frame_metrics = Metrics.make()
@@ -632,7 +670,6 @@ class Model(tf.Module):
           bits=encode_out.bottleneck.bits,
           frame_metrics=frame_metrics,
       )
-    assert 0
 
   def frame_loss(
       self,
@@ -673,22 +710,19 @@ class Model(tf.Module):
     """Compute rd loss over a video batch, as well as metrics."""
     video.validate_shape()
     frames = video.get_frames()
-    print(">>> training: {}".format(training))
-    print(">>> frames: {}".format(len(frames)))
-    network_outs = self.encode_and_decode_frames(
-        frames, training, cache)
+    print("\n"*10, "-"*10, "video_loss START", "-"*10)
+    print("training: {}, frames: {}".format(training, len(frames)))
+
+    print(">> encode_and_decode_frames")
+    network_outs = self.encode_and_decode_frames(frames, training, cache)
 
     rd_losses = []
     frame_metrics_list = []
     metrics = Metrics.make()
     frame_index = -1  # Prevents `undefined-loop-variable` in assert below.
-    for frame_index, (frame, network_out) in enumerate(
-        zip(frames, network_outs)):
-      rd_loss, rd_metrics = self.frame_loss(
-          frame,
-          network_out,
-          training=training,
-      )
+    for frame_index, (frame, network_out) in enumerate(zip(frames, network_outs)):
+      print("frame_index:", frame_index)
+      rd_loss, rd_metrics = self.frame_loss(frame, network_out, training=training,)
       if is_iframe(frame_index):
         rd_loss_weight = 1.0
       else:
@@ -704,8 +738,7 @@ class Model(tf.Module):
       frame_metrics_list.append(frame_metrics)
       metrics.merge(f"frame_{frame_index}", frame_metrics)
 
-    assert frame_index == video.num_frames - 1, (frame_index,
-                                                 video.num_frames - 1)
+    assert frame_index == video.num_frames - 1, (frame_index, video.num_frames - 1)
 
     video_rd_loss = tf.reduce_mean(rd_losses)
     video_loss = video_rd_loss
@@ -721,6 +754,9 @@ class Model(tf.Module):
     avg_metrics = Metrics.reduce(
         frame_metrics_list, scalar_reduce_fn=tf.reduce_mean)
     metrics.merge("video_avg", avg_metrics)
+    print("", "-"*10, "video_loss DONE", "-"*10, "\n"*10)
+    
+    sys.exit()
     return video_loss, metrics
 
   def _assert_cache_hits(self, num_frames, cache):
@@ -749,12 +785,10 @@ class Model(tf.Module):
     cache = tf_memoize.create_cache()
     with tf.GradientTape() as tape:
       # This will encode and decode the video, making sure memoize cache is hit.
-      video_loss, metrics = self.video_loss(
-          video, training=True, cache=cache)
+      video_loss, metrics = self.video_loss(video, training=True, cache=cache)
       # The optimizer will sum the gradients across replicas, so we
       # need to scale the loss accordingly.
-      local_loss = video_loss / tf.distribute.get_strategy(
-      ).num_replicas_in_sync
+      local_loss = video_loss / tf.distribute.get_strategy().num_replicas_in_sync
     var_list = self.all_trainable_variables
     gradients = tape.gradient(local_loss, var_list)
     self._optimizer.apply_gradients(zip(gradients, var_list))

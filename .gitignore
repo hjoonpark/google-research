@@ -1,3 +1,6 @@
+vct/downloaded_data/*
+vct/output*/
+
 # Compiled python modules.
 *.pyc
 

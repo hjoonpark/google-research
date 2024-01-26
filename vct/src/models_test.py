@@ -22,13 +22,12 @@ import tensorflow as tf
 from vct.src import models
 from vct.src import video_tensors
 
-
 ModelLite = functools.partial(models.Model, lightweight=True)
-
 
 class ModelsTest(tf.test.TestCase):
 
   def _restore_evaluate(self, ckpt_p):
+    print(">> _restore_evaluate")
     """Restore and evaluate a model for the given stage."""
     model = ModelLite()
     ckpt = tf.train.Checkpoint(model=model)
@@ -41,12 +40,14 @@ class ModelsTest(tf.test.TestCase):
     self.assertEqual(count, 3)
 
   def test_train_eval(self):
+    print(">> test_train_eval")
     ckpt_dir = self.create_tempdir().full_path
     model = ModelLite()
-    print("*"*200)
 
     train_step = tf.function(model.train_step)
-    train_step(video_tensors.TrainingVideo.make_random(num_frames=3))
+    frames = video_tensors.TrainingVideo.make_random(num_frames=3)
+    # frames = video_tensors.TrainingVideo()
+    train_step(frames)
     ckpt_p = model.write_ckpt(ckpt_dir, step=1)
     self._restore_evaluate(ckpt_p)
 
@@ -55,5 +56,6 @@ if __name__ == "__main__":
   tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
   print()
   print("tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)")
+  tf.config.run_functions_eagerly(True)
   print()
   tf.test.main()
